@@ -1,0 +1,217 @@
+USE master
+GO
+SET NOCOUNT ON
+
+DECLARE @SQLUser TABLE (
+    PrincipalID INT NOT NULL,
+    LoginName SYSNAME NOT NULL,
+    DomainGroup SYSNAME NULL DEFAULT ('')
+);
+
+DECLARE @WindowsGroup TABLE (
+    PrincipalID INT NOT NULL,
+    DomainGroup SYSNAME NOT NULL
+);
+
+DECLARE @WindowUsersInGroup TABLE (
+    AccountName SYSNAME NOT NULL,
+    AccountType VARCHAR(8)  NULL,
+    Privilege VARCHAR(9)  NULL,
+    WindowsAccount SYSNAME  NULL,
+    DomainGroup SYSNAME  NULL,
+    PrincipalID INT NULL
+);
+
+/* First, insert all SQL logins (S) and Window logins (U) */
+INSERT INTO @SQLUser (PrincipalID, LoginName)
+SELECT SP.principal_id, SP.name
+FROM sys.server_principals AS SP
+WHERE SP.TYPE IN ('S', 'U') /* S = SQL Login, U = Windows Login */
+--and sp.name not in ('##MS_SQLResourceSigningCertificate##', '##MS_SQLReplicationSigningCertificate##','##MS_SQLAuthenticatorCertificate##','##MS_PolicySigningCertificate##','##MS_SmoExtendedSigningCertificate##','##MS_PolicyTsqlExecutionLogin##','NT AUTHORITY\SYSTEM','NT SERVICE\MSSQLSERVER','NT SERVICE\ClusSvc','##MS_PolicyEventProcessingLogin##','##MS_AgentSigningCertificate##','NT SERVICE\SQLSERVERAGENT')
+and sp.name not like '##%'
+and sp.name not like 'nt service%'
+
+/* Now, for all domain groups, obtain the member accounts that belong to each one */
+INSERT INTO @WindowsGroup (PrincipalID, DomainGroup)
+SELECT SP.principal_id, SP.name
+FROM sys.server_principals AS SP
+WHERE SP.TYPE IN ('G') /* G = Windows Group */
+and sp.name not like '##%'
+and sp.name not like 'nt service%'
+
+/* Iterate through all domain groups retrieving each domain account that belongs to that group */
+DECLARE @CurrentDomainGroup SYSNAME;
+DECLARE @CurrentPrincipalID INT;
+
+SELECT TOP 1 @CurrentDomainGroup = DomainGroup, @CurrentPrincipalID = PrincipalID FROM @WindowsGroup
+
+
+WHILE (@CurrentDomainGroup IS NOT NULL)
+    BEGIN --while
+		BEGIN TRY 
+				INSERT INTO @WindowUsersInGroup (AccountName, AccountType, Privilege, WindowsAccount, DomainGroup)
+					EXEC xp_logininfo @acctname=@CurrentDomainGroup, @option='members';
+
+				DELETE @WindowsGroup WHERE DomainGroup = @CurrentDomainGroup;
+
+				UPDATE @WindowUsersInGroup
+				SET PrincipalID = @CurrentPrincipalID
+				WHERE PrincipalID IS NULL
+
+				SET @CurrentDomainGroup = NULL;
+				SET @CurrentPrincipalID = NULL;
+				SELECT TOP 1 @CurrentDomainGroup = DomainGroup, @CurrentPrincipalID = PrincipalID FROM @WindowsGroup
+		END TRY
+		BEGIN CATCH
+				PRINT ERROR_MESSAGE()
+				--SELECT CAST(@@SERVERNAME AS sysname) + N': Cannot find group: ' + CAST(@CurrentDomainGroup AS sysname)
+				INSERT INTO @WindowUsersInGroup (AccountName)
+					SELECT CAST(@@SERVERNAME AS sysname) + N': Cannot find group: ' + CAST(@CurrentDomainGroup AS sysname)
+				DELETE @WindowsGroup WHERE DomainGroup = @CurrentDomainGroup;
+				UPDATE @WindowUsersInGroup
+				SET PrincipalID = @CurrentPrincipalID
+				WHERE PrincipalID IS NULL
+
+				SET @CurrentDomainGroup = NULL;
+				SET @CurrentPrincipalID = NULL;
+				SELECT TOP 1 @CurrentDomainGroup = DomainGroup, @CurrentPrincipalID = PrincipalID FROM @WindowsGroup
+		END CATCH
+    END	  --while
+
+INSERT INTO @SQLUser (PrincipalID, LoginName, DomainGroup)
+SELECT PrincipalID, AccountName, DomainGroup
+FROM @WindowUsersInGroup;
+
+DELETE @WindowUsersInGroup 
+WHERE AccountName IS NULL  
+--SELECT TOP 1
+--    SU.LoginName AS [Login Name],
+--    SU.DomainGroup AS [Domain Group],
+--    SP.type_desc AS [Login Type],
+--    SP.is_disabled AS [Disabled],
+--    SP.create_date AS [Create Date],
+--    SP.modify_date AS [Modify Date],
+--    SP.default_database_name AS [Default Database],
+--    SL.denylogin AS [Deny Login],
+--    SL.hasaccess AS [Has Access],
+--    SL.isntname AS [IS NT Name],
+--    SL.isntgroup AS [IS NT Group],
+--    SL.isntuser AS [IS NT User],
+--    SL.sysadmin AS [System Administrator],
+--    SL.securityadmin AS [Security Administrator],
+--    SL.serveradmin AS [Server Administrator],
+--    SL.setupadmin AS [Setup Administrator],
+--    SL.processadmin AS [Process Administrator],
+--    SL.diskadmin AS [Disk Administrator],
+--    SL.dbcreator AS [Database Creator],
+--    SL.bulkadmin AS [Bulk Administrator]
+--FROM @SQLUser AS SU
+--    INNER JOIN sys.server_principals AS SP
+--        ON SU.PrincipalID = SP.principal_id
+--    INNER JOIN sys.syslogins  AS SL
+--        ON SP.name = SL.name
+--ORDER BY SU.LoginName, SU.DomainGroup;
+
+
+
+/* ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ */
+
+-- add dependancy to report only on non-orphaned db users.
+
+
+
+
+
+
+
+
+DECLARE @LOGINS TABLE
+	( NAME sysname)
+
+INSERT INTO @LOGINS
+SELECT name
+FROM sys.syslogins
+
+--SELECT * FROM @logins
+
+
+
+
+
+
+DECLARE @loginName sysname, @dbName sysname
+
+/* Set the two Parameters here. By defaul All logins and databases will be reported */
+SET @loginName = '%' -- e.g. 'RWS_APP_USER'
+SET @dbName = '%' -- e.g. 'ReportServer'
+
+
+-- Retrieve DB Role Level Info
+DECLARE @DBRolePermissions TABLE(
+ DatabaseName varchar(300), 
+ Principal_Name sysname, 
+ Login_Name sysname NULL, 
+ DB_RoleMember varchar(300), 
+ Permission_Type sysname)
+
+INSERT INTO @DBRolePermissions
+EXEC sp_MSforeachdb '
+ SELECT DISTINCT ''?'' AS DatabaseName, users.Name AS UserName, suser_sname(users.sid) AS Login_Name, 
+ roles.Name AS Role_Member_Name, roles.type_desc
+ FROM [?].sys.database_role_members r 
+ LEFT OUTER JOIN [?].sys.database_principals users on r.member_principal_id = users.principal_id
+ LEFT OUTER JOIN [?].sys.database_principals roles on r.role_principal_id = roles.principal_id
+ --WHERE users.type not in (''R'')'
+
+-- Capture permissions generated FROM sys.database_permissions
+INSERT INTO @DBRolePermissions
+EXEC sp_msforeachdb '
+ SELECT DISTINCT ''?'' AS DatabaseName, users.Name AS UserName, suser_sname(users.sid) AS Login_Name, 
+ r.Permission_Name AS DB_RoleMember, r.class_desc
+ FROM [?].sys.database_permissions r 
+ LEFT OUTER JOIN [?].sys.database_principals users on r.Grantee_principal_id = users.principal_id
+ WHERE r.class_desc = ''DATABASE'''
+
+
+SELECT @@SERVERNAME 'Server Name', 
+--DBRP.Principal_Name, DBRB.Login_Name, 
+    DBRP.DatabaseName, 
+	DBRP.DB_RoleMember AS Permission_Name, 
+	DBRP.Permission_Type,
+	DBRP.Login_Name,
+    SU.LoginName AS [Login Name],
+    SU.DomainGroup AS [Domain Group],
+    SP.type_desc AS [Login Type],
+    SP.is_disabled AS [Disabled],
+    SP.create_date AS [Create Date],
+    SP.modify_date AS [Modify Date],
+    SP.default_database_name AS [Default Database],
+    SL.denylogin AS [Deny Login],
+    SL.hasaccess AS [Has Access],
+    SL.isntname AS [IS NT Name],
+    SL.isntgroup AS [IS NT Group],
+    SL.isntuser AS [IS NT User],
+    SL.sysadmin AS [System Administrator],
+    SL.securityadmin AS [Security Administrator],
+    SL.serveradmin AS [Server Administrator],
+    SL.setupadmin AS [Setup Administrator],
+    SL.processadmin AS [Process Administrator],
+    SL.diskadmin AS [Disk Administrator],
+    SL.dbcreator AS [Database Creator],
+    SL.bulkadmin AS [Bulk Administrator]
+FROM @SQLUser AS SU
+    INNER JOIN sys.server_principals AS SP
+        ON SU.PrincipalID = SP.principal_id
+    INNER JOIN sys.syslogins  AS SL
+        ON SP.name = SL.name
+    FULL OUTER JOIN @DBRolePermissions AS DBRP
+		ON SL.NAME = DBRP.LOGIN_NAME
+WHERE 1=1
+AND (ISNULL(DBRP.Login_Name, '') LIKE @loginName OR ISNULL(DBRP.Principal_Name, '') LIKE @loginName)
+AND DBRP.DatabaseName LIKE @dbName
+--AND DBRP.Login_Name IN (SELECT *  FROM @logins)
+AND DBRP.Login_Name IS NOT NULL
+--AND DBRP.Login_Name LIKE '%developer%'
+AND su.loginname IS NOT NULL 
+ORDER BY Principal_Name, DatabaseName, DB_RoleMember
+--ORDER BY SU.LoginName, SU.DomainGroup;
