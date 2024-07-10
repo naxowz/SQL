@@ -1,0 +1,6 @@
+
+-- used to see which login group user is associated
+Exec xp_logininfo 'login','all'
+
+-- used to see members of login group 
+Exec xp_logininfo 'login','members'
