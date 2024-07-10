@@ -1,0 +1,39 @@
+
+-- run first to capture Databases original MDF LDF file location
+SELECT name AS FileLogicalName, physical_name AS FileLocation
+FROM sys.master_files 
+WHERE database_id = DB_ID(N'DB_NAME') 
+
+--Take DB offline Right CLick DB, select Close Active connections, and bring it offline.
+
+--Physically Move the Data and Log files
+-- make sure you are connected to the cluster
+USE master
+GO
+
+ALTER DATABASE DB_NAME SET OFFLINE
+
+
+USE master
+GO
+
+ALTER DATABASE [DB_NAME] 
+MODIFY FILE (NAME = DB_NAME_Data, FILENAME = 'J:\MSSQL\DATA\DB_NAME.mdf')
+
+ALTER DATABASE DB_NAME 
+MODIFY FILE (NAME = DB_NAME_log, FILENAME = 'K:\MSSQL\Log\DB_NAME_Log.ldf')
+
+
+USE master
+GO
+
+ALTER DATABASE DB_NAME SET ONLINE
+
+
+
+If in recovery pending mode due 
+--ALTER DATABASE DB_NAME SET emergency 
+-- make sure files are correct 
+-- ALTER DATABASE DB_NAME SET online 
+
+
